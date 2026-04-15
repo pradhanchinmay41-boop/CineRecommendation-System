@@ -1,5 +1,6 @@
 import requests
 import streamlit as st
+# import streamlit_autocomplete as st_autocomplete  # Removed problematic component
 
 # =============================
 # CONFIG
@@ -7,22 +8,38 @@ import streamlit as st
 API_BASE = "https://movie-rec-466x.onrender.com" or "http://127.0.0.1:8000"
 TMDB_IMG = "https://image.tmdb.org/t/p/w500"
 
-st.set_page_config(page_title="Movie Recommender", page_icon="🎬", layout="wide")
+st.set_page_config(page_title="Cine Recommender System", page_icon="🎬", layout="wide")
 
 # =============================
 # STYLES (minimal modern)
 # =============================
-st.markdown(
-    """
+st.markdown("""
 <style>
-.block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1400px; }
-.small-muted { color:#6b7280; font-size: 0.92rem; }
-.movie-title { font-size: 0.9rem; line-height: 1.15rem; height: 2.3rem; overflow: hidden; }
-.card { border: 1px solid rgba(0,0,0,0.08); border-radius: 16px; padding: 14px; background: rgba(255,255,255,0.7); }
+/* Animations */
+@keyframes fadeIn {from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:translateY(0);}}
+@keyframes glow {0%,100%{box-shadow:0 4px 12px rgba(0,0,0,0.1);}50%{box-shadow:0 4px 24px rgba(59,130,246,0.3);}}
+@keyframes slideUp {from{transform:translateY(10px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+
+/* Base */
+.block-container{padding-top:1rem;padding-bottom:4rem;max-width:1400px;animation:fadeIn .8s ease-out;}
+.small-muted{color:#6b7280;font-size:.92rem;}
+.movie-title{font-size:.9rem;line-height:1.15rem;height:2.3rem;overflow:hidden;transition:all .3s ease;animation:slideUp .5s ease-out .2s both;}
+
+/* Cards */
+.card{border:1px solid rgba(0,0,0,.08);border-radius:16px;padding:14px;background:rgba(255,255,255,.9);transition:all .3s cubic-bezier(.4,0,.2,1);position:relative;overflow:hidden;}
+.card:hover{transform:translateY(-4px)scale(1.02);box-shadow:0 12px 32px rgba(0,0,0,.15);animation:glow 1.5s infinite;}
+.card img{transition:transform .4s ease;border-radius:12px;}
+.card:hover img{transform:scale(1.08);}
+
+/* Button */
+.stButton > button{transition:all .3s ease;border-radius:8px;}
+.stButton > button:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(0,0,0,.15);}
+
+/* Footer */
+.footer{text-align:center;color:#6b7280;font-size:.95rem;padding:2rem 1rem 1rem;margin-top:2rem;border-top:1px solid rgba(0,0,0,.05);animation:fadeIn 1s ease-out .5s both;}
 </style>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
+
 
 # =============================
 # STATE + ROUTING (single-file pages)
@@ -58,6 +75,14 @@ def goto_details(tmdb_id: int):
     st.query_params["view"] = "details"
     st.query_params["id"] = str(int(tmdb_id))
     st.rerun()
+
+def goto_details_from_label(selected: str):
+    """Get tmdb_id from selected movie label via search."""
+    data, _ = api_get_json("/tmdb/search", params={"query": selected})
+    if data and data.get("results"):
+        first = data["results"][0]
+        if first.get("id"):
+            goto_details(first["id"])
 
 
 # =============================
@@ -218,7 +243,7 @@ with st.sidebar:
 # =============================
 # HEADER
 # =============================
-st.title("🎬 Movie Recommender")
+st.title("🎬 Cine Recommender")
 st.markdown(
     "<div class='small-muted'>Type keyword → dropdown suggestions + matching results → open → details + recommendations</div>",
     unsafe_allow_html=True,
@@ -229,54 +254,50 @@ st.divider()
 # VIEW: HOME
 # ==========================================================
 if st.session_state.view == "home":
-    typed = st.text_input(
-        "Search by movie title (keyword)", placeholder="Type: avenger, batman, love..."
-    )
+    # Real-time autocomplete search
+    @st.cache_data(ttl=1)
+    def get_movie_suggestions(query):
+        if len(query.strip()) < 2:
+            return []
+        data, err = api_get_json("/tmdb/search", params={"query": query.strip()})
+        if err or data is None:
+            return []
+        suggestions, _ = parse_tmdb_search_to_cards(data, query, limit=10)
+        return [s[0] for s in suggestions]  # labels only for autocomplete
+
+    search_query = st.text_input("Search by movie title", placeholder="Type movie name for suggestions...", key="movie_search_input")
+    
+    if search_query:
+        options = get_movie_suggestions(search_query)
+        selected_movie = st.selectbox("Select movie:", options=options[:10] if options else [], key="movie_select")
+        if st.button("Open selected movie", key="open_movie"):
+            if selected_movie:
+                goto_details_from_label(selected_movie)
+    else:
+        selected_movie = None
 
     st.divider()
 
-    # SEARCH MODE (Autocomplete + word-match results)
-    if typed.strip():
-        if len(typed.strip()) < 2:
-            st.caption("Type at least 2 characters for suggestions.")
-        else:
-            data, err = api_get_json("/tmdb/search", params={"query": typed.strip()})
+    # Show results for typed query if no selection
+    typed_query = (search_query or selected_movie or "").strip()
+    if len(typed_query) >= 2:
+        data, err = api_get_json("/tmdb/search", params={"query": typed_query})
+        if not err and data:
+            _, cards = parse_tmdb_search_to_cards(data, typed_query, limit=24)
+            st.markdown("### Matching Results")
+            poster_grid(cards, cols=grid_cols, key_prefix="search_results")
 
-            if err or data is None:
-                st.error(f"Search failed: {err}")
-            else:
-                suggestions, cards = parse_tmdb_search_to_cards(
-                    data, typed.strip(), limit=24
-                )
+    # HOME FEED MODE (fallback if no search)
+    if not typed_query.strip():
+        st.markdown(f"### 🏠 Home — {home_category.replace('_',' ').title()}")
+        home_cards, err = api_get_json(
+            "/home", params={"category": home_category, "limit": 24}
+        )
+        if err or not home_cards:
+            st.error(f"Home feed failed: {err or 'Unknown error'}")
+            st.stop()
+        poster_grid(home_cards, cols=grid_cols, key_prefix="home_feed")
 
-                # Dropdown
-                if suggestions:
-                    labels = ["-- Select a movie --"] + [s[0] for s in suggestions]
-                    selected = st.selectbox("Suggestions", labels, index=0)
-
-                    if selected != "-- Select a movie --":
-                        # map label -> id
-                        label_to_id = {s[0]: s[1] for s in suggestions}
-                        goto_details(label_to_id[selected])
-                else:
-                    st.info("No suggestions found. Try another keyword.")
-
-                st.markdown("### Results")
-                poster_grid(cards, cols=grid_cols, key_prefix="search_results")
-
-        st.stop()
-
-    # HOME FEED MODE
-    st.markdown(f"### 🏠 Home — {home_category.replace('_',' ').title()}")
-
-    home_cards, err = api_get_json(
-        "/home", params={"category": home_category, "limit": 24}
-    )
-    if err or not home_cards:
-        st.error(f"Home feed failed: {err or 'Unknown error'}")
-        st.stop()
-
-    poster_grid(home_cards, cols=grid_cols, key_prefix="home_feed")
 
 # ==========================================================
 # VIEW: DETAILS
@@ -346,7 +367,7 @@ elif st.session_state.view == "details":
         )
 
         if not err2 and bundle:
-            st.markdown("#### 🔎 Similar Movies (TF-IDF)")
+            st.markdown("#### 🔎 Similar Movies ")
             poster_grid(
                 to_cards_from_tfidf_items(bundle.get("tfidf_recommendations")),
                 cols=grid_cols,
@@ -372,3 +393,14 @@ elif st.session_state.view == "details":
                 st.warning("No recommendations available right now.")
     else:
         st.warning("No title available to compute recommendations.")
+
+        # Footer - always visible
+        st.markdown("---")
+        st.markdown(
+            """
+            <div class="footer">
+                🎬 Developed by <strong>CHINMAY</strong> | Cine Recommendation System
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
