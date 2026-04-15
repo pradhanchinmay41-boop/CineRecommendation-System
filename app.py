@@ -270,16 +270,18 @@ if st.session_state.view == "home":
     if search_query:
         options = get_movie_suggestions(search_query)
         selected_movie = st.selectbox("Select movie:", options=options[:10] if options else [], key="movie_select")
-        if st.button("Open selected movie", key="open_movie"):
+        if st.button("Open selected movie", key="open_selected"):
             if selected_movie:
+                st.info(f"Opening: {selected_movie}")
+                st.session_state.selected_search_movie = selected_movie
                 goto_details_from_label(selected_movie)
-    else:
-        selected_movie = None
+                st.rerun()
+        selected_movie = st.session_state.get('selected_search_movie', None)
 
     st.divider()
 
     # Show results for typed query if no selection
-    typed_query = (search_query or selected_movie or "").strip()
+    typed_query = (search_query or st.session_state.get('selected_search_movie', '') or "").strip()
     if len(typed_query) >= 2:
         data, err = api_get_json("/tmdb/search", params={"query": typed_query})
         if not err and data:
